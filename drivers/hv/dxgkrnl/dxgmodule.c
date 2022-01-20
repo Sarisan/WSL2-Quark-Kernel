@@ -823,7 +823,6 @@ static struct dxgglobal *dxgglobal_create(void)
 #ifdef DEBUG
 	dxgk_validate_ioctls();
 #endif
-
 	return dxgglobal;
 }
 
