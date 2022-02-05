@@ -14,6 +14,7 @@
 #ifndef _DXGVMBUS_H
 #define _DXGVMBUS_H
 
+struct dxgprocess;
 struct dxgadapter;
 
 #define DXG_MAX_VM_BUS_PACKET_SIZE	(1024 * 128)

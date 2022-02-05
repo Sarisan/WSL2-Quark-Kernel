@@ -72,4 +72,41 @@ enum hmgrentry_type {
 	HMGRENTRY_TYPE_MONITOREDFENCE	= HMGRENTRY_TYPE_LIMIT + 1,
 };
 
+void hmgrtable_init(struct hmgrtable *tbl, struct dxgprocess *process);
+void hmgrtable_destroy(struct hmgrtable *tbl);
+void hmgrtable_lock(struct hmgrtable *tbl, enum dxglockstate state);
+void hmgrtable_unlock(struct hmgrtable *tbl, enum dxglockstate state);
+struct d3dkmthandle hmgrtable_alloc_handle(struct hmgrtable *tbl, void *object,
+				     enum hmgrentry_type t, bool make_valid);
+struct d3dkmthandle hmgrtable_alloc_handle_safe(struct hmgrtable *tbl,
+						void *obj,
+						enum hmgrentry_type t,
+						bool reserve);
+int hmgrtable_assign_handle(struct hmgrtable *tbl, void *obj,
+			    enum hmgrentry_type, struct d3dkmthandle h);
+int hmgrtable_assign_handle_safe(struct hmgrtable *tbl, void *obj,
+				 enum hmgrentry_type t, struct d3dkmthandle h);
+void hmgrtable_free_handle(struct hmgrtable *tbl, enum hmgrentry_type t,
+			   struct d3dkmthandle h);
+void hmgrtable_free_handle_safe(struct hmgrtable *tbl, enum hmgrentry_type t,
+				struct d3dkmthandle h);
+struct d3dkmthandle hmgrtable_build_entry_handle(struct hmgrtable *tbl,
+						 u32 index);
+enum hmgrentry_type hmgrtable_get_object_type(struct hmgrtable *tbl,
+					      struct d3dkmthandle h);
+void *hmgrtable_get_object(struct hmgrtable *tbl, struct d3dkmthandle h);
+void *hmgrtable_get_object_by_type(struct hmgrtable *tbl, enum hmgrentry_type t,
+				   struct d3dkmthandle h);
+void *hmgrtable_get_object_ignore_destroyed(struct hmgrtable *tbl,
+					    struct d3dkmthandle h,
+					    enum hmgrentry_type t);
+bool hmgrtable_mark_destroyed(struct hmgrtable *tbl, struct d3dkmthandle h);
+bool hmgrtable_unmark_destroyed(struct hmgrtable *tbl, struct d3dkmthandle h);
+void *hmgrtable_get_entry_object(struct hmgrtable *tbl, u32 index);
+bool hmgrtable_next_entry(struct hmgrtable *tbl,
+			  u32 *start_index,
+			  enum hmgrentry_type *type,
+			  struct d3dkmthandle *handle,
+			  void **object);
+
 #endif
