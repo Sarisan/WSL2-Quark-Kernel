@@ -880,6 +880,20 @@ cleanup:
 	return ret;
 }
 
+static int dxgk_create_hwcontext(struct dxgprocess *process,
+					     void *__user inargs)
+{
+	/* This is obsolete entry point */
+	return -ENOTTY;
+}
+
+static int dxgk_destroy_hwcontext(struct dxgprocess *process,
+					      void *__user inargs)
+{
+	/* This is obsolete entry point */
+	return -ENOTTY;
+}
+
 static int
 dxgk_create_hwqueue(struct dxgprocess *process, void *__user inargs)
 {
@@ -2528,6 +2542,13 @@ success:
 }
 
 static int
+dxgk_open_sync_object(struct dxgprocess *process, void *__user inargs)
+{
+	pr_err("%s is not supported", __func__);
+	return -ENOTTY;
+}
+
+static int
 dxgk_signal_sync_object(struct dxgprocess *process, void *__user inargs)
 {
 	struct d3dkmt_signalsynchronizationobject2 args;
@@ -3540,6 +3561,101 @@ cleanup:
 }
 
 static int
+dxgk_flush_heap_transitions(struct dxgprocess *process, void *__user inargs)
+{
+	struct d3dkmt_flushheaptransitions args;
+	int ret;
+	struct dxgadapter *adapter = NULL;
+	bool adapter_locked = false;
+
+	ret = copy_from_user(&args, inargs, sizeof(args));
+	if (ret) {
+		pr_err("%s failed to copy input args", __func__);
+		ret = -EINVAL;
+		goto cleanup;
+	}
+
+	adapter = dxgprocess_adapter_by_handle(process, args.adapter);
+	if (adapter == NULL) {
+		ret = -EINVAL;
+		goto cleanup;
+	}
+
+	ret = dxgadapter_acquire_lock_shared(adapter);
+	if (ret < 0) {
+		adapter = NULL;
+		goto cleanup;
+	}
+	adapter_locked = true;
+
+	args.adapter = adapter->host_handle;
+	ret = dxgvmb_send_flush_heap_transitions(process, adapter, &args);
+	if (ret < 0)
+		goto cleanup;
+	ret = copy_to_user(inargs, &args, sizeof(args));
+	if (ret) {
+		pr_err("%s failed to copy output args", __func__);
+		ret = -EINVAL;
+	}
+
+cleanup:
+
+	if (adapter_locked)
+		dxgadapter_release_lock_shared(adapter);
+	if (adapter)
+		kref_put(&adapter->adapter_kref, dxgadapter_release);
+	return ret;
+}
+
+static int
+dxgk_query_vidmem_info(struct dxgprocess *process, void *__user inargs)
+{
+	struct d3dkmt_queryvideomemoryinfo args;
+	int ret;
+	struct dxgadapter *adapter = NULL;
+	bool adapter_locked = false;
+
+	ret = copy_from_user(&args, inargs, sizeof(args));
+	if (ret) {
+		pr_err("%s failed to copy input args", __func__);
+		ret = -EINVAL;
+		goto cleanup;
+	}
+
+	if (args.process != 0) {
+		pr_err("query vidmem info from another process ");
+		ret = -EINVAL;
+		goto cleanup;
+	}
+
+	adapter = dxgprocess_adapter_by_handle(process, args.adapter);
+	if (adapter == NULL) {
+		ret = -EINVAL;
+		goto cleanup;
+	}
+
+	ret = dxgadapter_acquire_lock_shared(adapter);
+	if (ret < 0) {
+		adapter = NULL;
+		goto cleanup;
+	}
+	adapter_locked = true;
+
+	args.adapter = adapter->host_handle;
+	ret = dxgvmb_send_query_vidmem_info(process, adapter, &args, inargs);
+
+cleanup:
+
+	if (adapter_locked)
+		dxgadapter_release_lock_shared(adapter);
+	if (adapter)
+		kref_put(&adapter->adapter_kref, dxgadapter_release);
+	if (ret < 0)
+		pr_err("%s failed: %x", __func__, ret);
+	return ret;
+}
+
+static int
 dxgk_get_device_state(struct dxgprocess *process, void *__user inargs)
 {
 	int ret;
@@ -3852,6 +3968,20 @@ cleanup:
 
 	pr_debug("ioctl:%s %s %d", errorstr(ret), __func__, ret);
 	return ret;
+}
+
+static int
+dxgk_invalidate_cache(struct dxgprocess *process, void *__user inargs)
+{
+	pr_err("%s is not implemented", __func__);
+	return -ENOTTY;
+}
+
+static int
+dxgk_query_resource_info(struct dxgprocess *process, void *__user inargs)
+{
+	pr_err("%s is not supported", __func__);
+	return -ENOTTY;
 }
 
 static int
@@ -4219,6 +4349,13 @@ cleanup:
 }
 
 static int
+dxgk_open_resource(struct dxgprocess *process, void *__user inargs)
+{
+	pr_err("%s is not supported", __func__);
+	return -ENOTTY;
+}
+
+static int
 dxgk_open_resource_nt(struct dxgprocess *process,
 				      void *__user inargs)
 {
@@ -4272,6 +4409,28 @@ cleanup:
 
 	pr_debug("ioctl:%s %s %d", errorstr(ret), __func__, ret);
 	return ret;
+}
+
+static int
+dxgk_render(struct dxgprocess *process, void *__user inargs)
+{
+	pr_err("%s is not implemented", __func__);
+	return -ENOTTY;
+}
+
+static int
+dxgk_create_context(struct dxgprocess *process, void *__user inargs)
+{
+	pr_err("%s is not implemented", __func__);
+	return -ENOTTY;
+}
+
+static int
+dxgk_get_shared_resource_adapter_luid(struct dxgprocess *process,
+				      void *__user inargs)
+{
+	pr_err("shared_resource_adapter_luid is not implemented");
+	return -ENOTTY;
 }
 
 /*
@@ -4334,6 +4493,8 @@ void init_ioctls(void)
 		  LX_DXOPENADAPTERFROMLUID);
 	SET_IOCTL(/*0x2 */ dxgk_create_device,
 		  LX_DXCREATEDEVICE);
+	SET_IOCTL(/*0x3 */ dxgk_create_context,
+		  LX_DXCREATECONTEXT);
 	SET_IOCTL(/*0x4 */ dxgk_create_context_virtual,
 		  LX_DXCREATECONTEXTVIRTUAL);
 	SET_IOCTL(/*0x5 */ dxgk_destroy_context,
@@ -4344,6 +4505,8 @@ void init_ioctls(void)
 		  LX_DXCREATEPAGINGQUEUE);
 	SET_IOCTL(/*0x9 */ dxgk_query_adapter_info,
 		  LX_DXQUERYADAPTERINFO);
+	SET_IOCTL(/*0xa */ dxgk_query_vidmem_info,
+		  LX_DXQUERYVIDEOMEMORYINFO);
 	SET_IOCTL(/*0xe */ dxgk_get_device_state,
 		  LX_DXGETDEVICESTATE);
 	SET_IOCTL(/*0xf */ dxgk_submit_command,
@@ -4362,20 +4525,38 @@ void init_ioctls(void)
 		  LX_DXCLOSEADAPTER);
 	SET_IOCTL(/*0x16 */ dxgk_change_vidmem_reservation,
 		  LX_DXCHANGEVIDEOMEMORYRESERVATION);
+	SET_IOCTL(/*0x17 */ dxgk_create_hwcontext,
+		  LX_DXCREATEHWCONTEXT);
 	SET_IOCTL(/*0x18 */ dxgk_create_hwqueue,
 		  LX_DXCREATEHWQUEUE);
 	SET_IOCTL(/*0x19 */ dxgk_destroy_device,
 		  LX_DXDESTROYDEVICE);
+	SET_IOCTL(/*0x1a */ dxgk_destroy_hwcontext,
+		  LX_DXDESTROYHWCONTEXT);
 	SET_IOCTL(/*0x1b */ dxgk_destroy_hwqueue,
 		  LX_DXDESTROYHWQUEUE);
 	SET_IOCTL(/*0x1c */ dxgk_destroy_paging_queue,
 		  LX_DXDESTROYPAGINGQUEUE);
 	SET_IOCTL(/*0x1d */ dxgk_destroy_sync_object,
 		  LX_DXDESTROYSYNCHRONIZATIONOBJECT);
+	SET_IOCTL(/*0x1f */ dxgk_flush_heap_transitions,
+		  LX_DXFLUSHHEAPTRANSITIONS);
+	SET_IOCTL(/*0x23 */ dxgk_get_shared_resource_adapter_luid,
+		  LX_DXGETSHAREDRESOURCEADAPTERLUID);
+	SET_IOCTL(/*0x24 */ dxgk_invalidate_cache,
+		  LX_DXINVALIDATECACHE);
 	SET_IOCTL(/*0x25 */ dxgk_lock2,
 		  LX_DXLOCK2);
+	SET_IOCTL(/*0x28 */ dxgk_open_resource,
+		  LX_DXOPENRESOURCE);
+	SET_IOCTL(/*0x29 */ dxgk_open_sync_object,
+		  LX_DXOPENSYNCHRONIZATIONOBJECT);
 	SET_IOCTL(/*0x2a */ dxgk_query_alloc_residency,
 		  LX_DXQUERYALLOCATIONRESIDENCY);
+	SET_IOCTL(/*0x2b */ dxgk_query_resource_info,
+		  LX_DXQUERYRESOURCEINFO);
+	SET_IOCTL(/*0x2d */ dxgk_render,
+		  LX_DXRENDER);
 	SET_IOCTL(/*0x2e */ dxgk_set_allocation_priority,
 		  LX_DXSETALLOCATIONPRIORITY);
 	SET_IOCTL(/*0x31 */ dxgk_signal_sync_object_cpu,
