@@ -893,15 +893,19 @@ struct dxgsyncobject *dxgsyncobject_create(struct dxgprocess *process,
 	case _D3DDDI_PERIODIC_MONITORED_FENCE:
 		syncobj->monitored_fence = 1;
 		break;
+	case _D3DDDI_CPU_NOTIFICATION:
+		syncobj->cpu_event = 1;
+		syncobj->host_event = vzalloc(sizeof(struct dxghostevent));
+		if (syncobj->host_event == NULL)
+			goto cleanup;
+		break;
 	default:
 		break;
 	}
 	if (flags.shared) {
 		syncobj->shared = 1;
 		if (!flags.nt_security_sharing) {
-			dev_err(dxgglobaldev,
-				"%s: nt_security_sharing must be set",
-				__func__);
+			pr_err("%s: nt_security_sharing must be set", __func__);
 			goto cleanup;
 		}
 	}
@@ -922,6 +926,8 @@ struct dxgsyncobject *dxgsyncobject_create(struct dxgprocess *process,
 	pr_debug("%s 0x%p\n", __func__, syncobj);
 	return syncobj;
 cleanup:
+	if (syncobj->host_event)
+		vfree(syncobj->host_event);
 	if (syncobj)
 		vfree(syncobj);
 	return NULL;
@@ -931,6 +937,7 @@ void dxgsyncobject_destroy(struct dxgprocess *process,
 			   struct dxgsyncobject *syncobj)
 {
 	int destroyed;
+	struct dxghosteventcpu *host_event;
 
 	pr_debug("%s 0x%p", __func__, syncobj);
 
@@ -949,6 +956,16 @@ void dxgsyncobject_destroy(struct dxgprocess *process,
 		}
 		hmgrtable_unlock(&process->handle_table, DXGLOCK_EXCL);
 
+		if (syncobj->cpu_event) {
+			host_event = syncobj->host_event;
+			if (host_event->cpu_event) {
+				eventfd_ctx_put(host_event->cpu_event);
+				if (host_event->hdr.event_id)
+					dxgglobal_remove_host_event(
+						&host_event->hdr);
+				host_event->cpu_event = NULL;
+			}
+		}
 		if (syncobj->monitored_fence)
 			dxgdevice_remove_syncobj(syncobj);
 		else
@@ -988,5 +1005,7 @@ void dxgsyncobject_release(struct kref *refcount)
 	struct dxgsyncobject *syncobj;
 
 	syncobj = container_of(refcount, struct dxgsyncobject, syncobj_kref);
+	if (syncobj->host_event)
+		vfree(syncobj->host_event);
 	vfree(syncobj);
 }
