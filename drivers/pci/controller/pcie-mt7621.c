@@ -109,15 +109,6 @@ static inline void pcie_write(struct mt7621_pcie *pcie, u32 val, u32 reg)
 	writel_relaxed(val, pcie->base + reg);
 }
 
-static inline void pcie_rmw(struct mt7621_pcie *pcie, u32 reg, u32 clr, u32 set)
-{
-	u32 val = readl_relaxed(pcie->base + reg);
-
-	val &= ~clr;
-	val |= set;
-	writel_relaxed(val, pcie->base + reg);
-}
-
 static inline u32 pcie_port_read(struct mt7621_pcie_port *port, u32 reg)
 {
 	return readl_relaxed(port->base + reg);
@@ -598,3 +589,5 @@ static struct platform_driver mt7621_pci_driver = {
 	},
 };
 builtin_platform_driver(mt7621_pci_driver);
+
+MODULE_LICENSE("GPL v2");
