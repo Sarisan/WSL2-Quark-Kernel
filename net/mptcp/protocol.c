@@ -464,9 +464,12 @@ static bool mptcp_pending_data_fin(struct sock *sk, u64 *seq)
 static void mptcp_set_datafin_timeout(const struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
+	u32 retransmits;
 
-	mptcp_sk(sk)->timer_ival = min(TCP_RTO_MAX,
-				       TCP_RTO_MIN << icsk->icsk_retransmits);
+	retransmits = min_t(u32, icsk->icsk_retransmits,
+			    ilog2(TCP_RTO_MAX / TCP_RTO_MIN));
+
+	mptcp_sk(sk)->timer_ival = TCP_RTO_MIN << retransmits;
 }
 
 static void __mptcp_set_timeout(struct sock *sk, long tout)
@@ -972,7 +975,9 @@ static void __mptcp_mem_reclaim_partial(struct sock *sk)
 
 	lockdep_assert_held_once(&sk->sk_lock.slock);
 
-	__mptcp_rmem_reclaim(sk, reclaimable - 1);
+	if (reclaimable > SK_MEM_QUANTUM)
+		__mptcp_rmem_reclaim(sk, reclaimable - 1);
+
 	sk_mem_reclaim_partial(sk);
 }
 
