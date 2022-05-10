@@ -582,8 +582,9 @@ void timer_rearm_host_dec(u64 now)
 		local_paca->irq_happened |= PACA_IRQ_DEC;
 	} else {
 		now = *next_tb - now;
-		if (now <= decrementer_max)
-			set_dec_or_work(now);
+		if (now > decrementer_max)
+			now = decrementer_max;
+		set_dec_or_work(now);
 	}
 }
 EXPORT_SYMBOL_GPL(timer_rearm_host_dec);
@@ -609,23 +610,22 @@ DEFINE_INTERRUPT_HANDLER_ASYNC(timer_interrupt)
 		return;
 	}
 
-	/* Conditionally hard-enable interrupts. */
-	if (should_hard_irq_enable()) {
-		/*
-		 * Ensure a positive value is written to the decrementer, or
-		 * else some CPUs will continue to take decrementer exceptions.
-		 * When the PPC_WATCHDOG (decrementer based) is configured,
-		 * keep this at most 31 bits, which is about 4 seconds on most
-		 * systems, which gives the watchdog a chance of catching timer
-		 * interrupt hard lockups.
-		 */
-		if (IS_ENABLED(CONFIG_PPC_WATCHDOG))
-			set_dec(0x7fffffff);
-		else
-			set_dec(decrementer_max);
+	/*
+	 * Ensure a positive value is written to the decrementer, or
+	 * else some CPUs will continue to take decrementer exceptions.
+	 * When the PPC_WATCHDOG (decrementer based) is configured,
+	 * keep this at most 31 bits, which is about 4 seconds on most
+	 * systems, which gives the watchdog a chance of catching timer
+	 * interrupt hard lockups.
+	 */
+	if (IS_ENABLED(CONFIG_PPC_WATCHDOG))
+		set_dec(0x7fffffff);
+	else
+		set_dec(decrementer_max);
 
+	/* Conditionally hard-enable interrupts. */
+	if (should_hard_irq_enable())
 		do_hard_irq_enable();
-	}
 
 #if defined(CONFIG_PPC32) && defined(CONFIG_PPC_PMAC)
 	if (atomic_read(&ppc_n_lost_interrupts) != 0)
