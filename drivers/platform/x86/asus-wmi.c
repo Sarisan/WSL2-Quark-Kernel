@@ -371,10 +371,14 @@ static int asus_wmi_evaluate_method_buf(u32 method_id,
 
 	switch (obj->type) {
 	case ACPI_TYPE_BUFFER:
-		if (obj->buffer.length > size)
+		if (obj->buffer.length > size) {
 			err = -ENOSPC;
-		if (obj->buffer.length == 0)
+			break;
+		}
+		if (obj->buffer.length == 0) {
 			err = -ENODATA;
+			break;
+		}
 
 		memcpy(ret_buffer, obj->buffer.pointer, obj->buffer.length);
 		break;
@@ -2059,7 +2063,7 @@ static int fan_boost_mode_check_present(struct asus_wmi *asus)
 	err = asus_wmi_get_devstate(asus, ASUS_WMI_DEVID_FAN_BOOST_MODE,
 				    &result);
 	if (err) {
-		if (err == -ENODEV)
+		if (err == -ENODEV || err == -ENODATA)
 			return 0;
 		else
 			return err;
@@ -2223,9 +2227,10 @@ static int fan_curve_check_present(struct asus_wmi *asus, bool *available,
 
 	err = fan_curve_get_factory_default(asus, fan_dev);
 	if (err) {
-		if (err == -ENODEV || err == -ENODATA)
-			return 0;
-		return err;
+		pr_debug("fan_curve_get_factory_default(0x%08x) failed: %d\n",
+			 fan_dev, err);
+		/* Don't cause probe to fail on devices without fan-curves */
+		return 0;
 	}
 
 	*available = true;
