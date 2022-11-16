@@ -248,8 +248,8 @@ static int spl2sw_nvmem_get_mac_address(struct device *dev, struct device_node *
 
 	/* Check if mac address is valid */
 	if (!is_valid_ether_addr(mac)) {
-		kfree(mac);
 		dev_info(dev, "Invalid mac address in nvmem (%pM)!\n", mac);
+		kfree(mac);
 		return -EINVAL;
 	}
 
@@ -286,7 +286,6 @@ static u32 spl2sw_init_netdev(struct platform_device *pdev, u8 *mac_addr,
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register net device \"%s\"!\n",
 			ndev->name);
-		free_netdev(ndev);
 		*r_ndev = NULL;
 		return ret;
 	}

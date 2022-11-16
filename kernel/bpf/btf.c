@@ -3128,7 +3128,7 @@ static int btf_struct_resolve(struct btf_verifier_env *env,
 	if (v->next_member) {
 		const struct btf_type *last_member_type;
 		const struct btf_member *last_member;
-		u16 last_member_type_id;
+		u32 last_member_type_id;
 
 		last_member = btf_type_member(v->t) + v->next_member - 1;
 		last_member_type_id = last_member->type;
@@ -4432,6 +4432,11 @@ static int btf_func_proto_check(struct btf_verifier_env *env,
 
 		ret_type = btf_type_by_id(btf, ret_type_id);
 		if (!ret_type) {
+			btf_verifier_log_type(env, t, "Invalid return type");
+			return -EINVAL;
+		}
+
+		if (btf_type_is_resolve_source_only(ret_type)) {
 			btf_verifier_log_type(env, t, "Invalid return type");
 			return -EINVAL;
 		}
