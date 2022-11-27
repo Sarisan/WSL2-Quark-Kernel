@@ -119,15 +119,15 @@ struct _vcs_dpi_soc_bounding_box_st dcn3_21_soc = {
 		},
 	},
 	.num_states = 1,
-	.sr_exit_time_us = 12.36,
-	.sr_enter_plus_exit_time_us = 16.72,
+	.sr_exit_time_us = 19.95,
+	.sr_enter_plus_exit_time_us = 24.36,
 	.sr_exit_z8_time_us = 285.0,
 	.sr_enter_plus_exit_z8_time_us = 320,
 	.writeback_latency_us = 12.0,
 	.round_trip_ping_latency_dcfclk_cycles = 263,
-	.urgent_latency_pixel_data_only_us = 4.0,
-	.urgent_latency_pixel_mixed_with_vm_data_us = 4.0,
-	.urgent_latency_vm_data_only_us = 4.0,
+	.urgent_latency_pixel_data_only_us = 9.35,
+	.urgent_latency_pixel_mixed_with_vm_data_us = 9.35,
+	.urgent_latency_vm_data_only_us = 9.35,
 	.fclk_change_latency_us = 20,
 	.usr_retraining_latency_us = 2,
 	.smn_latency_us = 2,
@@ -489,6 +489,7 @@ void dcn321_update_bw_bounding_box_fpu(struct dc *dc, struct clk_bw_params *bw_p
 		if ((int)(dcn3_21_soc.urgent_latency_us * 1000) != dc->bb_overrides.urgent_latency_ns
 			&& dc->bb_overrides.urgent_latency_ns) {
 			dcn3_21_soc.urgent_latency_us = dc->bb_overrides.urgent_latency_ns / 1000.0;
+			dcn3_21_soc.urgent_latency_pixel_data_only_us = dc->bb_overrides.urgent_latency_ns / 1000.0;
 		}
 
 		if ((int)(dcn3_21_soc.dram_clock_change_latency_us * 1000)
