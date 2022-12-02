@@ -1249,6 +1249,7 @@ static int sof_link_afe_load(struct snd_soc_component *scomp, struct snd_sof_dai
 static int sof_link_ssp_load(struct snd_soc_component *scomp, struct snd_sof_dai_link *slink,
 			     struct sof_ipc_dai_config *config, struct snd_sof_dai *dai)
 {
+	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_soc_tplg_hw_config *hw_config = slink->hw_configs;
 	struct sof_dai_private_data *private = dai->private;
 	u32 size = sizeof(*config);
@@ -1272,6 +1273,12 @@ static int sof_link_ssp_load(struct snd_soc_component *scomp, struct snd_sof_dai
 		sof_dai_set_format(&hw_config[i], &config[i]);
 
 		config[i].hdr.size = size;
+
+		if (sdev->mclk_id_override) {
+			dev_dbg(scomp->dev, "tplg: overriding topology mclk_id %d by quirk %d\n",
+				config[i].ssp.mclk_id, sdev->mclk_id_quirk);
+			config[i].ssp.mclk_id = sdev->mclk_id_quirk;
+		}
 
 		/* copy differentiating hw configs to ipc structs */
 		config[i].ssp.mclk_rate = le32_to_cpu(hw_config[i].mclk_rate);
@@ -2235,6 +2242,7 @@ static int sof_ipc3_tear_down_all_pipelines(struct snd_sof_dev *sdev, bool verif
 	struct sof_ipc_fw_version *v = &sdev->fw_ready.version;
 	struct snd_sof_widget *swidget;
 	struct snd_sof_route *sroute;
+	bool dyn_widgets = false;
 	int ret;
 
 	/*
@@ -2244,12 +2252,14 @@ static int sof_ipc3_tear_down_all_pipelines(struct snd_sof_dev *sdev, bool verif
 	 * topology loading the sound card unavailable to open PCMs.
 	 */
 	list_for_each_entry(swidget, &sdev->widget_list, list) {
-		if (swidget->dynamic_pipeline_widget)
+		if (swidget->dynamic_pipeline_widget) {
+			dyn_widgets = true;
 			continue;
+		}
 
-		/* Do not free widgets for static pipelines with FW ABI older than 3.19 */
+		/* Do not free widgets for static pipelines with FW older than SOF2.2 */
 		if (!verify && !swidget->dynamic_pipeline_widget &&
-		    v->abi_version < SOF_ABI_VER(3, 19, 0)) {
+		    SOF_FW_VER(v->major, v->minor, v->micro) < SOF_FW_VER(2, 2, 0)) {
 			swidget->use_count = 0;
 			swidget->complete = 0;
 			continue;
@@ -2263,9 +2273,11 @@ static int sof_ipc3_tear_down_all_pipelines(struct snd_sof_dev *sdev, bool verif
 	/*
 	 * Tear down all pipelines associated with PCMs that did not get suspended
 	 * and unset the prepare flag so that they can be set up again during resume.
-	 * Skip this step for older firmware.
+	 * Skip this step for older firmware unless topology has any
+	 * dynamic pipeline (in which case the step is mandatory).
 	 */
-	if (!verify && v->abi_version >= SOF_ABI_VER(3, 19, 0)) {
+	if (!verify && (dyn_widgets || SOF_FW_VER(v->major, v->minor, v->micro) >=
+	    SOF_FW_VER(2, 2, 0))) {
 		ret = sof_tear_down_left_over_pipelines(sdev);
 		if (ret < 0) {
 			dev_err(sdev->dev, "failed to tear down paused pipelines\n");
