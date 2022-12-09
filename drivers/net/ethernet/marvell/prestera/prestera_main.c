@@ -730,6 +730,7 @@ static int prestera_port_create(struct prestera_switch *sw, u32 id)
 	return 0;
 
 err_sfp_bind:
+	unregister_netdev(dev);
 err_register_netdev:
 	prestera_port_list_del(port);
 err_port_init:
@@ -799,32 +800,30 @@ static void prestera_port_handle_event(struct prestera_switch *sw,
 
 		caching_dw = &port->cached_hw_stats.caching_dw;
 
-		if (port->phy_link) {
-			memset(&smac, 0, sizeof(smac));
-			smac.valid = true;
-			smac.oper = pevt->data.mac.oper;
-			if (smac.oper) {
-				smac.mode = pevt->data.mac.mode;
-				smac.speed = pevt->data.mac.speed;
-				smac.duplex = pevt->data.mac.duplex;
-				smac.fc = pevt->data.mac.fc;
-				smac.fec = pevt->data.mac.fec;
-				phylink_mac_change(port->phy_link, true);
-			} else {
-				phylink_mac_change(port->phy_link, false);
-			}
-			prestera_port_mac_state_cache_write(port, &smac);
+		memset(&smac, 0, sizeof(smac));
+		smac.valid = true;
+		smac.oper = pevt->data.mac.oper;
+		if (smac.oper) {
+			smac.mode = pevt->data.mac.mode;
+			smac.speed = pevt->data.mac.speed;
+			smac.duplex = pevt->data.mac.duplex;
+			smac.fc = pevt->data.mac.fc;
+			smac.fec = pevt->data.mac.fec;
 		}
+		prestera_port_mac_state_cache_write(port, &smac);
 
 		if (port->state_mac.oper) {
-			if (!port->phy_link)
+			if (port->phy_link)
+				phylink_mac_change(port->phy_link, true);
+			else
 				netif_carrier_on(port->dev);
 
 			if (!delayed_work_pending(caching_dw))
 				queue_delayed_work(prestera_wq, caching_dw, 0);
-		} else if (netif_running(port->dev) &&
-			   netif_carrier_ok(port->dev)) {
-			if (!port->phy_link)
+		} else {
+			if (port->phy_link)
+				phylink_mac_change(port->phy_link, false);
+			else if (netif_running(port->dev) && netif_carrier_ok(port->dev))
 				netif_carrier_off(port->dev);
 
 			if (delayed_work_pending(caching_dw))
