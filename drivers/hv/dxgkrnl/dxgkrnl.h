@@ -14,7 +14,6 @@
 #ifndef _DXGKRNL_H
 #define _DXGKRNL_H
 
-#include <linux/uuid.h>
 #include <linux/kernel.h>
 #include <linux/mutex.h>
 #include <linux/semaphore.h>
@@ -754,6 +753,12 @@ long dxgk_compat_ioctl(struct file *f, unsigned int p1, unsigned long p2);
 long dxgk_unlocked_ioctl(struct file *f, unsigned int p1, unsigned long p2);
 
 int dxg_unmap_iospace(void *va, u32 size);
+
+static inline int guid_t_cmp(const guid_t u1, const guid_t u2)
+{
+	return memcmp(&u1, &u2, sizeof(guid_t));
+}
+
 /*
  * The convention is that VNBus instance id is a GUID, but the host sets
  * the lower part of the value to the host adapter LUID. The function
