@@ -814,8 +814,13 @@ btrfs_attach_transaction_barrier(struct btrfs_root *root)
 
 	trans = start_transaction(root, 0, TRANS_ATTACH,
 				  BTRFS_RESERVE_NO_FLUSH, true);
-	if (trans == ERR_PTR(-ENOENT))
-		btrfs_wait_for_commit(root->fs_info, 0);
+	if (trans == ERR_PTR(-ENOENT)) {
+		int ret;
+
+		ret = btrfs_wait_for_commit(root->fs_info, 0);
+		if (ret)
+			return ERR_PTR(ret);
+	}
 
 	return trans;
 }
@@ -919,6 +924,7 @@ int btrfs_wait_for_commit(struct btrfs_fs_info *fs_info, u64 transid)
 	}
 
 	wait_for_commit(cur_trans, TRANS_STATE_COMPLETED);
+	ret = cur_trans->aborted;
 	btrfs_put_transaction(cur_trans);
 out:
 	return ret;
@@ -2009,7 +2015,20 @@ static void cleanup_transaction(struct btrfs_trans_handle *trans, int err)
 
 	if (current->journal_info == trans)
 		current->journal_info = NULL;
-	btrfs_scrub_cancel(fs_info);
+
+	/*
+	 * If relocation is running, we can't cancel scrub because that will
+	 * result in a deadlock. Before relocating a block group, relocation
+	 * pauses scrub, then starts and commits a transaction before unpausing
+	 * scrub. If the transaction commit is being done by the relocation
+	 * task or triggered by another task and the relocation task is waiting
+	 * for the commit, and we end up here due to an error in the commit
+	 * path, then calling btrfs_scrub_cancel() will deadlock, as we are
+	 * asking for scrub to stop while having it asked to be paused higher
+	 * above in relocation code.
+	 */
+	if (!test_bit(BTRFS_FS_RELOC_RUNNING, &fs_info->flags))
+		btrfs_scrub_cancel(fs_info);
 
 	kmem_cache_free(btrfs_trans_handle_cachep, trans);
 }

@@ -580,7 +580,16 @@ static int repair_io_failure(struct btrfs_fs_info *fs_info, u64 ino, u64 start,
 				      &map_length, &bioc, mirror_num);
 		if (ret)
 			goto out_counter_dec;
-		BUG_ON(mirror_num != bioc->mirror_num);
+		/*
+		 * This happens when dev-replace is also running, and the
+		 * mirror_num indicates the dev-replace target.
+		 *
+		 * In this case, we don't need to do anything, as the read
+		 * error just means the replace progress hasn't reached our
+		 * read range, and later replace routine would handle it well.
+		 */
+		if (mirror_num != bioc->mirror_num)
+			goto out_counter_dec;
 	}
 
 	sector = bioc->stripes[bioc->mirror_num - 1].physical >> 9;
@@ -3006,11 +3015,12 @@ retry:
 			}
 
 			/*
-			 * the filesystem may choose to bump up nr_to_write.
+			 * The filesystem may choose to bump up nr_to_write.
 			 * We have to make sure to honor the new nr_to_write
-			 * at any time
+			 * at any time.
 			 */
-			nr_to_write_done = wbc->nr_to_write <= 0;
+			nr_to_write_done = (wbc->sync_mode == WB_SYNC_NONE &&
+					    wbc->nr_to_write <= 0);
 		}
 		pagevec_release(&pvec);
 		cond_resched();
@@ -3929,6 +3939,7 @@ int extent_fiemap(struct btrfs_inode *inode, struct fiemap_extent_info *fieinfo,
 	lockend = round_up(start + len, root->fs_info->sectorsize);
 	prev_extent_end = lockstart;
 
+	btrfs_inode_lock(&inode->vfs_inode, BTRFS_ILOCK_SHARED);
 	lock_extent(&inode->io_tree, lockstart, lockend, &cached_state);
 
 	ret = fiemap_find_last_extent_offset(inode, path, &last_extent_end);
@@ -4120,6 +4131,7 @@ check_eof_delalloc:
 
 out_unlock:
 	unlock_extent(&inode->io_tree, lockstart, lockend, &cached_state);
+	btrfs_inode_unlock(&inode->vfs_inode, BTRFS_ILOCK_SHARED);
 out:
 	kfree(backref_cache);
 	btrfs_free_path(path);

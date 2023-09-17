@@ -154,7 +154,7 @@ int ntfs_fix_post_read(struct NTFS_RECORD_HEADER *rhdr, size_t bytes,
 	/* Check errors. */
 	if ((fo & 1) || fo + fn * sizeof(short) > SECTOR_SIZE || !fn-- ||
 	    fn * SECTOR_SIZE > bytes) {
-		return -EINVAL; /* Native chkntfs returns ok! */
+		return -E_NTFS_CORRUPT;
 	}
 
 	/* Get fixup pointer. */
@@ -1849,9 +1849,10 @@ int ntfs_security_init(struct ntfs_sb_info *sbi)
 		goto out;
 	}
 
-	root_sdh = resident_data(attr);
+	root_sdh = resident_data_ex(attr, sizeof(struct INDEX_ROOT));
 	if (root_sdh->type != ATTR_ZERO ||
-	    root_sdh->rule != NTFS_COLLATION_TYPE_SECURITY_HASH) {
+	    root_sdh->rule != NTFS_COLLATION_TYPE_SECURITY_HASH ||
+	    offsetof(struct INDEX_ROOT, ihdr) + root_sdh->ihdr.used > attr->res.data_size) {
 		err = -EINVAL;
 		goto out;
 	}
@@ -1867,9 +1868,10 @@ int ntfs_security_init(struct ntfs_sb_info *sbi)
 		goto out;
 	}
 
-	root_sii = resident_data(attr);
+	root_sii = resident_data_ex(attr, sizeof(struct INDEX_ROOT));
 	if (root_sii->type != ATTR_ZERO ||
-	    root_sii->rule != NTFS_COLLATION_TYPE_UINT) {
+	    root_sii->rule != NTFS_COLLATION_TYPE_UINT ||
+	    offsetof(struct INDEX_ROOT, ihdr) + root_sii->ihdr.used > attr->res.data_size) {
 		err = -EINVAL;
 		goto out;
 	}

@@ -538,6 +538,7 @@ static int ovl_link_up(struct ovl_copy_up_ctx *c)
 			/* Restore timestamps on parent (best effort) */
 			ovl_set_timestamps(ofs, upperdir, &c->pstat);
 			ovl_dentry_set_upper_alias(c->dentry);
+			ovl_dentry_update_reval(c->dentry, upper);
 		}
 	}
 	inode_unlock(udir);
@@ -754,7 +755,7 @@ static int ovl_copy_up_tmpfile(struct ovl_copy_up_ctx *c)
 	if (!c->metacopy && c->stat.size) {
 		err = ovl_copy_up_file(ofs, c->dentry, tmpfile, c->stat.size);
 		if (err)
-			return err;
+			goto out_fput;
 	}
 
 	err = ovl_copy_up_metadata(c, temp);
@@ -857,6 +858,7 @@ static int ovl_do_copy_up(struct ovl_copy_up_ctx *c)
 		inode_unlock(udir);
 
 		ovl_dentry_set_upper_alias(c->dentry);
+		ovl_dentry_update_reval(c->dentry, ovl_dentry_upper(c->dentry));
 	}
 
 out:
@@ -972,6 +974,10 @@ static int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 			  STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
 	if (err)
 		return err;
+
+	if (!kuid_has_mapping(current_user_ns(), ctx.stat.uid) ||
+	    !kgid_has_mapping(current_user_ns(), ctx.stat.gid))
+		return -EOVERFLOW;
 
 	ctx.metacopy = ovl_need_meta_copy_up(dentry, ctx.stat.mode, flags);
 
