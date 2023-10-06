@@ -568,6 +568,12 @@ static int ni_repack(struct ntfs_inode *ni)
 		}
 
 		roff = le16_to_cpu(attr->nres.run_off);
+
+		if (roff > le32_to_cpu(attr->size)) {
+			err = -EINVAL;
+			break;
+		}
+
 		err = run_unpack(&run, sbi, ni->mi.rno, svcn, evcn, svcn,
 				 Add2Ptr(attr, roff),
 				 le32_to_cpu(attr->size) - roff);
@@ -868,6 +874,7 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 	if (err)
 		goto out1;
 
+	err = -EINVAL;
 	/* Call mi_remove_attr() in reverse order to keep pointers 'arr_move' valid. */
 	while (to_free > 0) {
 		struct ATTRIB *b = arr_move[--nb];
@@ -876,7 +883,8 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 
 		attr = mi_insert_attr(mi, b->type, Add2Ptr(b, name_off),
 				      b->name_len, asize, name_off);
-		WARN_ON(!attr);
+		if (!attr)
+			goto out1;
 
 		mi_get_ref(mi, &le_b[nb]->ref);
 		le_b[nb]->id = attr->id;
@@ -886,17 +894,20 @@ int ni_create_attr_list(struct ntfs_inode *ni)
 		attr->id = le_b[nb]->id;
 
 		/* Remove from primary record. */
-		WARN_ON(!mi_remove_attr(NULL, &ni->mi, b));
+		if (!mi_remove_attr(NULL, &ni->mi, b))
+			goto out1;
 
 		if (to_free <= asize)
 			break;
 		to_free -= asize;
-		WARN_ON(!nb);
+		if (!nb)
+			goto out1;
 	}
 
 	attr = mi_insert_attr(&ni->mi, ATTR_LIST, NULL, 0,
 			      lsize + SIZEOF_RESIDENT, SIZEOF_RESIDENT);
-	WARN_ON(!attr);
+	if (!attr)
+		goto out1;
 
 	attr->non_res = 0;
 	attr->flags = 0;
@@ -916,9 +927,10 @@ out1:
 	kfree(ni->attr_list.le);
 	ni->attr_list.le = NULL;
 	ni->attr_list.size = 0;
+	return err;
 
 out:
-	return err;
+	return 0;
 }
 
 /*
@@ -1588,6 +1600,9 @@ int ni_delete_all(struct ntfs_inode *ni)
 
 		asize = le32_to_cpu(attr->size);
 		roff = le16_to_cpu(attr->nres.run_off);
+
+		if (roff > asize)
+			return -EINVAL;
 
 		/* run==1 means unpack and deallocate. */
 		run_unpack_ex(RUN_DEALLOCATE, sbi, ni->mi.rno, svcn, evcn, svcn,
@@ -2290,6 +2305,11 @@ remove_wof:
 
 		asize = le32_to_cpu(attr->size);
 		roff = le16_to_cpu(attr->nres.run_off);
+
+		if (roff > asize) {
+			err = -EINVAL;
+			goto out;
+		}
 
 		/*run==1  Means unpack and deallocate. */
 		run_unpack_ex(RUN_DEALLOCATE, sbi, ni->mi.rno, svcn, evcn, svcn,
