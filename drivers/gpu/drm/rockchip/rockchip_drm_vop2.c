@@ -822,7 +822,7 @@ static void vop2_enable(struct vop2 *vop2)
 {
 	int ret;
 
-	ret = pm_runtime_get_sync(vop2->dev);
+	ret = pm_runtime_resume_and_get(vop2->dev);
 	if (ret < 0) {
 		drm_err(vop2->drm, "failed to get pm runtime: %d\n", ret);
 		return;
@@ -839,6 +839,8 @@ static void vop2_enable(struct vop2 *vop2)
 		drm_err(vop2->drm, "failed to attach dma mapping, %d\n", ret);
 		return;
 	}
+
+	regcache_sync(vop2->map);
 
 	if (vop2->data->soc_id == 3566)
 		vop2_writel(vop2, RK3568_OTP_WIN_EN, 1);
@@ -867,6 +869,8 @@ static void vop2_disable(struct vop2 *vop2)
 	rockchip_drm_dma_detach_device(vop2->drm, vop2->dev);
 
 	pm_runtime_put_sync(vop2->dev);
+
+	regcache_mark_dirty(vop2->map);
 
 	clk_disable_unprepare(vop2->aclk);
 	clk_disable_unprepare(vop2->hclk);
