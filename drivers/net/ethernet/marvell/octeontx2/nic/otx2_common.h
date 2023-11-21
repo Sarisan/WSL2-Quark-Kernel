@@ -27,6 +27,7 @@
 #include "otx2_txrx.h"
 #include "otx2_devlink.h"
 #include <rvu_trace.h>
+#include "qos.h"
 
 /* PCI device IDs */
 #define PCI_DEVID_OCTEONTX2_RVU_PF              0xA063
@@ -186,7 +187,8 @@ struct otx2_hw {
 	u16                     rx_queues;
 	u16                     tx_queues;
 	u16                     xdp_queues;
-	u16                     tot_tx_queues;
+	u16			tc_tx_queues;
+	u16                     non_qos_queues; /* tx queues plus xdp queues */
 	u16			max_queues;
 	u16			pool_cnt;
 	u16			rqpool_cnt;
@@ -332,11 +334,11 @@ struct otx2_flow_config {
 #define OTX2_PER_VF_VLAN_FLOWS	2 /* Rx + Tx per VF */
 #define OTX2_VF_VLAN_RX_INDEX	0
 #define OTX2_VF_VLAN_TX_INDEX	1
-	u16			max_flows;
-	u8			dmacflt_max_flows;
 	u32			*bmap_to_dmacindex;
 	unsigned long		*dmacflt_bmap;
 	struct list_head	flow_list;
+	u32			dmacflt_max_flows;
+	u16                     max_flows;
 };
 
 struct otx2_tc_info {
@@ -386,7 +388,7 @@ struct cn10k_mcs_txsc {
 	struct cn10k_txsc_stats stats;
 	struct list_head entry;
 	enum macsec_validation_type last_validate_frames;
-	bool last_protect_frames;
+	bool last_replay_protect;
 	u16 hw_secy_id_tx;
 	u16 hw_secy_id_rx;
 	u16 hw_flow_id;
@@ -498,6 +500,8 @@ struct otx2_nic {
 	u16			pfc_schq_list[NIX_TXSCH_LVL_CNT][MAX_TXSCHQ_PER_FUNC];
 	bool			pfc_alloc_status[NIX_PF_PFC_PRIO_MAX];
 #endif
+	/* qos */
+	struct otx2_qos		qos;
 
 	/* napi event count. It is needed for adaptive irq coalescing. */
 	u32 napi_events;
@@ -733,15 +737,16 @@ static inline void cn10k_aura_freeptr(void *dev, int aura, u64 buf)
 	u64 ptrs[2];
 
 	ptrs[1] = buf;
+	get_cpu();
 	/* Free only one buffer at time during init and teardown */
 	__cn10k_aura_freeptr(pfvf, aura, ptrs, 2);
+	put_cpu();
 }
 
 /* Alloc pointer from pool/aura */
 static inline u64 otx2_aura_allocptr(struct otx2_nic *pfvf, int aura)
 {
-	u64 *ptr = (u64 *)otx2_get_regaddr(pfvf,
-			   NPA_LF_AURA_OP_ALLOCX(0));
+	u64 *ptr = (__force u64 *)otx2_get_regaddr(pfvf, NPA_LF_AURA_OP_ALLOCX(0));
 	u64 incr = (u64)aura | BIT_ULL(63);
 
 	return otx2_atomic64_add(incr, ptr);
@@ -883,12 +888,23 @@ static inline void otx2_dma_unmap_page(struct otx2_nic *pfvf,
 
 static inline u16 otx2_get_smq_idx(struct otx2_nic *pfvf, u16 qidx)
 {
+	u16 smq;
 #ifdef CONFIG_DCB
 	if (qidx < NIX_PF_PFC_PRIO_MAX && pfvf->pfc_alloc_status[qidx])
 		return pfvf->pfc_schq_list[NIX_TXSCH_LVL_SMQ][qidx];
 #endif
+	/* check if qidx falls under QOS queues */
+	if (qidx >= pfvf->hw.non_qos_queues)
+		smq = pfvf->qos.qid_to_sqmap[qidx - pfvf->hw.non_qos_queues];
+	else
+		smq = pfvf->hw.txschq_list[NIX_TXSCH_LVL_SMQ][0];
 
-	return pfvf->hw.txschq_list[NIX_TXSCH_LVL_SMQ][0];
+	return smq;
+}
+
+static inline u16 otx2_get_total_tx_queues(struct otx2_nic *pfvf)
+{
+	return pfvf->hw.non_qos_queues + pfvf->hw.tc_tx_queues;
 }
 
 /* MSI-X APIs */
@@ -915,19 +931,26 @@ int otx2_config_nix(struct otx2_nic *pfvf);
 int otx2_config_nix_queues(struct otx2_nic *pfvf);
 int otx2_txschq_config(struct otx2_nic *pfvf, int lvl, int prio, bool pfc_en);
 int otx2_txsch_alloc(struct otx2_nic *pfvf);
-int otx2_txschq_stop(struct otx2_nic *pfvf);
+void otx2_txschq_stop(struct otx2_nic *pfvf);
+void otx2_txschq_free_one(struct otx2_nic *pfvf, u16 lvl, u16 schq);
+void otx2_free_pending_sqe(struct otx2_nic *pfvf);
 void otx2_sqb_flush(struct otx2_nic *pfvf);
-int __otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
-		      dma_addr_t *dma);
+int otx2_alloc_rbuf(struct otx2_nic *pfvf, struct otx2_pool *pool,
+		    dma_addr_t *dma);
 int otx2_rxtx_enable(struct otx2_nic *pfvf, bool enable);
 void otx2_ctx_disable(struct mbox *mbox, int type, bool npa);
 int otx2_nix_config_bp(struct otx2_nic *pfvf, bool enable);
 void otx2_cleanup_rx_cqes(struct otx2_nic *pfvf, struct otx2_cq_queue *cq);
 void otx2_cleanup_tx_cqes(struct otx2_nic *pfvf, struct otx2_cq_queue *cq);
+int otx2_sq_init(struct otx2_nic *pfvf, u16 qidx, u16 sqb_aura);
 int otx2_sq_aq_init(void *dev, u16 qidx, u16 sqb_aura);
 int cn10k_sq_aq_init(void *dev, u16 qidx, u16 sqb_aura);
 int otx2_alloc_buffer(struct otx2_nic *pfvf, struct otx2_cq_queue *cq,
 		      dma_addr_t *dma);
+int otx2_pool_init(struct otx2_nic *pfvf, u16 pool_id,
+		   int stack_pages, int numptrs, int buf_size);
+int otx2_aura_init(struct otx2_nic *pfvf, int aura_id,
+		   int pool_id, int numptrs);
 
 /* RSS configuration APIs*/
 int otx2_rss_init(struct otx2_nic *pfvf);
@@ -1035,4 +1058,14 @@ static inline void cn10k_handle_mcs_event(struct otx2_nic *pfvf,
 {}
 #endif /* CONFIG_MACSEC */
 
+/* qos support */
+static inline void otx2_qos_init(struct otx2_nic *pfvf, int qos_txqs)
+{
+	struct otx2_hw *hw = &pfvf->hw;
+
+	hw->tc_tx_queues = qos_txqs;
+}
+
+u16 otx2_select_queue(struct net_device *netdev, struct sk_buff *skb,
+		      struct net_device *sb_dev);
 #endif /* OTX2_COMMON_H */
