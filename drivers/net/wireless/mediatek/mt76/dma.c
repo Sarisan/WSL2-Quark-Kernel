@@ -93,13 +93,13 @@ __mt76_get_rxwi(struct mt76_dev *dev)
 {
 	struct mt76_txwi_cache *t = NULL;
 
-	spin_lock(&dev->wed_lock);
+	spin_lock_bh(&dev->wed_lock);
 	if (!list_empty(&dev->rxwi_cache)) {
 		t = list_first_entry(&dev->rxwi_cache, struct mt76_txwi_cache,
 				     list);
 		list_del(&t->list);
 	}
-	spin_unlock(&dev->wed_lock);
+	spin_unlock_bh(&dev->wed_lock);
 
 	return t;
 }
@@ -145,9 +145,9 @@ mt76_put_rxwi(struct mt76_dev *dev, struct mt76_txwi_cache *t)
 	if (!t)
 		return;
 
-	spin_lock(&dev->wed_lock);
+	spin_lock_bh(&dev->wed_lock);
 	list_add(&t->list, &dev->rxwi_cache);
-	spin_unlock(&dev->wed_lock);
+	spin_unlock_bh(&dev->wed_lock);
 }
 EXPORT_SYMBOL_GPL(mt76_put_rxwi);
 
@@ -329,9 +329,6 @@ mt76_dma_tx_cleanup_idx(struct mt76_dev *dev, struct mt76_queue *q, int idx,
 
 	if (e->txwi == DMA_DUMMY_DATA)
 		e->txwi = NULL;
-
-	if (e->skb == DMA_DUMMY_DATA)
-		e->skb = NULL;
 
 	*prev_e = *e;
 	memset(e, 0, sizeof(*e));

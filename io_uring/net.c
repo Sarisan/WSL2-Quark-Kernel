@@ -183,6 +183,10 @@ static int io_setup_async_msg(struct io_kiocb *req,
 	memcpy(async_msg, kmsg, sizeof(*kmsg));
 	if (async_msg->msg.msg_name)
 		async_msg->msg.msg_name = &async_msg->addr;
+
+	if ((req->flags & REQ_F_BUFFER_SELECT) && !async_msg->msg.msg_iter.nr_segs)
+		return -EAGAIN;
+
 	/* if were using fast_iov, set it to the new one */
 	if (iter_is_iovec(&kmsg->msg.msg_iter) && !kmsg->free_iov) {
 		size_t fast_idx = iter_iov(&kmsg->msg.msg_iter) - kmsg->fast_iov;
@@ -542,6 +546,7 @@ static int io_recvmsg_copy_hdr(struct io_kiocb *req,
 			       struct io_async_msghdr *iomsg)
 {
 	iomsg->msg.msg_name = &iomsg->addr;
+	iomsg->msg.msg_iter.nr_segs = 0;
 
 #ifdef CONFIG_COMPAT
 	if (req->ctx->compat)
@@ -642,7 +647,7 @@ static inline bool io_recv_finish(struct io_kiocb *req, int *ret,
 
 	if (!mshot_finished) {
 		if (io_aux_cqe(req, issue_flags & IO_URING_F_COMPLETE_DEFER,
-			       *ret, cflags | IORING_CQE_F_MORE, true)) {
+			       *ret, cflags | IORING_CQE_F_MORE, false)) {
 			io_recv_prep_retry(req);
 			/* Known not-empty or unknown state, retry */
 			if (cflags & IORING_CQE_F_SOCK_NONEMPTY ||
@@ -1367,7 +1372,7 @@ retry:
 	if (ret < 0)
 		return ret;
 	if (io_aux_cqe(req, issue_flags & IO_URING_F_COMPLETE_DEFER, ret,
-		       IORING_CQE_F_MORE, true))
+		       IORING_CQE_F_MORE, false))
 		goto retry;
 
 	return -ECANCELED;
@@ -1456,16 +1461,6 @@ int io_connect(struct io_kiocb *req, unsigned int issue_flags)
 	int ret;
 	bool force_nonblock = issue_flags & IO_URING_F_NONBLOCK;
 
-	if (connect->in_progress) {
-		struct socket *socket;
-
-		ret = -ENOTSOCK;
-		socket = sock_from_file(req->file);
-		if (socket)
-			ret = sock_error(socket->sk);
-		goto out;
-	}
-
 	if (req_has_async_data(req)) {
 		io = req->async_data;
 	} else {
@@ -1485,9 +1480,7 @@ int io_connect(struct io_kiocb *req, unsigned int issue_flags)
 	    && force_nonblock) {
 		if (ret == -EINPROGRESS) {
 			connect->in_progress = true;
-			return -EAGAIN;
-		}
-		if (ret == -ECONNABORTED) {
+		} else if (ret == -ECONNABORTED) {
 			if (connect->seen_econnaborted)
 				goto out;
 			connect->seen_econnaborted = true;
@@ -1500,6 +1493,16 @@ int io_connect(struct io_kiocb *req, unsigned int issue_flags)
 		}
 		memcpy(req->async_data, &__io, sizeof(__io));
 		return -EAGAIN;
+	}
+	if (connect->in_progress) {
+		/*
+		 * At least bluetooth will return -EBADFD on a re-connect
+		 * attempt, and it's (supposedly) also valid to get -EISCONN
+		 * which means the previous result is good. For both of these,
+		 * grab the sock_error() and use that for the completion.
+		 */
+		if (ret == -EBADFD || ret == -EISCONN)
+			ret = sock_error(sock_from_file(req->file)->sk);
 	}
 	if (ret == -ERESTARTSYS)
 		ret = -EINTR;
