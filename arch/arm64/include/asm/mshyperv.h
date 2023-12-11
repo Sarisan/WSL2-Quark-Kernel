@@ -22,6 +22,12 @@
 #include <linux/arm-smccc.h>
 #include <asm/hyperv-tlfs.h>
 
+#if IS_ENABLED(CONFIG_HYPERV)
+void __init hyperv_early_init(void);
+#else
+static inline void hyperv_early_init(void) {};
+#endif
+
 /*
  * Declare calls to get and set Hyper-V VP register values on ARM64, which
  * requires a hypercall.
@@ -40,6 +46,17 @@ static inline u64 hv_get_register(unsigned int reg)
 {
 	return hv_get_vpreg(reg);
 }
+
+static inline u64 hv_raw_get_register(unsigned int reg)
+{
+	return hv_get_vpreg(reg);
+}
+
+/* Define the interrupt ID used by STIMER0 Direct Mode interrupts. This
+ * value can't come from ACPI tables because it is needed before the
+ * Linux ACPI subsystem is initialized.
+ */
+#define HYPERV_STIMER0_VECTOR	31
 
 /* SMCCC hypercall parameters */
 #define HV_SMCCC_FUNC_NUMBER	1
