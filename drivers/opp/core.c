@@ -832,9 +832,14 @@ EXPORT_SYMBOL_GPL(dev_pm_opp_find_level_ceil);
  * use.
  */
 struct dev_pm_opp *dev_pm_opp_find_level_floor(struct device *dev,
-					       unsigned long *level)
+					       unsigned int *level)
 {
-	return _find_key_floor(dev, level, 0, true, _read_level, NULL);
+	unsigned long temp = *level;
+	struct dev_pm_opp *opp;
+
+	opp = _find_key_floor(dev, &temp, 0, true, _read_level, NULL);
+	*level = temp;
+	return opp;
 }
 EXPORT_SYMBOL_GPL(dev_pm_opp_find_level_floor);
 
@@ -1378,12 +1383,12 @@ int dev_pm_opp_set_rate(struct device *dev, unsigned long target_freq)
 		 * value of the frequency. In such a case, do not abort but
 		 * configure the hardware to the desired frequency forcefully.
 		 */
-		forced = opp_table->rate_clk_single != target_freq;
+		forced = opp_table->rate_clk_single != freq;
 	}
 
-	ret = _set_opp(dev, opp_table, opp, &target_freq, forced);
+	ret = _set_opp(dev, opp_table, opp, &freq, forced);
 
-	if (target_freq)
+	if (freq)
 		dev_pm_opp_put(opp);
 
 put_opp_table:
