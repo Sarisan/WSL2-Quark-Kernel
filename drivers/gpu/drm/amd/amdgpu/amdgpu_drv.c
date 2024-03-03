@@ -115,9 +115,10 @@
  *   3.54.0 - Add AMDGPU_CTX_QUERY2_FLAGS_RESET_IN_PROGRESS support
  * - 3.55.0 - Add AMDGPU_INFO_GPUVM_FAULT query
  * - 3.56.0 - Update IB start address and size alignment for decode and encode
+ * - 3.57.0 - Compute tunneling on GFX10+
  */
 #define KMS_DRIVER_MAJOR	3
-#define KMS_DRIVER_MINOR	56
+#define KMS_DRIVER_MINOR	57
 #define KMS_DRIVER_PATCHLEVEL	0
 
 /*
@@ -2313,38 +2314,6 @@ amdgpu_pci_remove(struct pci_dev *pdev)
 		pm_runtime_forbid(dev->dev);
 	}
 
-	if (amdgpu_ip_version(adev, MP1_HWIP, 0) == IP_VERSION(13, 0, 2) &&
-	    !amdgpu_sriov_vf(adev)) {
-		bool need_to_reset_gpu = false;
-
-		if (adev->gmc.xgmi.num_physical_nodes > 1) {
-			struct amdgpu_hive_info *hive;
-
-			hive = amdgpu_get_xgmi_hive(adev);
-			if (hive->device_remove_count == 0)
-				need_to_reset_gpu = true;
-			hive->device_remove_count++;
-			amdgpu_put_xgmi_hive(hive);
-		} else {
-			need_to_reset_gpu = true;
-		}
-
-		/* Workaround for ASICs need to reset SMU.
-		 * Called only when the first device is removed.
-		 */
-		if (need_to_reset_gpu) {
-			struct amdgpu_reset_context reset_context;
-
-			adev->shutdown = true;
-			memset(&reset_context, 0, sizeof(reset_context));
-			reset_context.method = AMD_RESET_METHOD_NONE;
-			reset_context.reset_req_dev = adev;
-			set_bit(AMDGPU_NEED_FULL_RESET, &reset_context.flags);
-			set_bit(AMDGPU_RESET_FOR_DEVICE_REMOVE, &reset_context.flags);
-			amdgpu_device_gpu_recover(adev, NULL, &reset_context);
-		}
-	}
-
 	amdgpu_driver_unload_kms(dev);
 
 	/*
@@ -2480,6 +2449,7 @@ static int amdgpu_pmops_suspend(struct device *dev)
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
 
+	adev->suspend_complete = false;
 	if (amdgpu_acpi_is_s0ix_active(adev))
 		adev->in_s0ix = true;
 	else if (amdgpu_acpi_is_s3_active(adev))
@@ -2494,6 +2464,7 @@ static int amdgpu_pmops_suspend_noirq(struct device *dev)
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 	struct amdgpu_device *adev = drm_to_adev(drm_dev);
 
+	adev->suspend_complete = true;
 	if (amdgpu_acpi_should_gpu_reset(adev))
 		return amdgpu_asic_reset(adev);
 

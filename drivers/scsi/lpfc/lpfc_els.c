@@ -1130,12 +1130,12 @@ stop_rr_fcf_flogi:
 			 vport->port_state, vport->fc_flag,
 			 sp->cmn.priority_tagging, kref_read(&ndlp->kref));
 
-	if (sp->cmn.priority_tagging)
-		vport->phba->pport->vmid_flag |= (LPFC_VMID_ISSUE_QFPA |
-						  LPFC_VMID_TYPE_PRIO);
 	/* reinitialize the VMID datastructure before returning */
 	if (lpfc_is_vmid_enabled(phba))
 		lpfc_reinit_vmid(vport);
+	if (sp->cmn.priority_tagging)
+		vport->phba->pport->vmid_flag |= (LPFC_VMID_ISSUE_QFPA |
+						  LPFC_VMID_TYPE_PRIO);
 
 	/*
 	 * Address a timing race with dev_loss.  If dev_loss is active on
@@ -2128,8 +2128,8 @@ lpfc_cmpl_els_plogi(struct lpfc_hba *phba, struct lpfc_iocbq *cmdiocb,
 						NLP_EVT_DEVICE_RM);
 	} else {
 		/* Good status, call state machine */
-		prsp = list_entry(cmdiocb->cmd_dmabuf->list.next,
-				  struct lpfc_dmabuf, list);
+		prsp = list_get_first(&cmdiocb->cmd_dmabuf->list,
+				      struct lpfc_dmabuf, list);
 		if (!prsp)
 			goto out;
 		if (!lpfc_is_els_acc_rsp(prsp))
@@ -11130,6 +11130,14 @@ mbox_err_exit:
 	lpfc_nlp_put(ndlp);
 
 	mempool_free(pmb, phba->mbox_mem_pool);
+
+	/* reinitialize the VMID datastructure before returning.
+	 * this is specifically for vport
+	 */
+	if (lpfc_is_vmid_enabled(phba))
+		lpfc_reinit_vmid(vport);
+	vport->vmid_flag = vport->phba->pport->vmid_flag;
+
 	return;
 }
 
