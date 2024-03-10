@@ -8,7 +8,7 @@
  * Copyright 2007, Michael Wu <flamingice@sourmilk.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
  * Copyright (C) 2015 - 2017 Intel Deutschland GmbH
- * Copyright (C) 2018 - 2023 Intel Corporation
+ * Copyright (C) 2018 - 2024 Intel Corporation
  */
 
 #include <linux/delay.h>
@@ -42,6 +42,9 @@
 #define IEEE80211_ASSOC_TIMEOUT_LONG	(HZ / 2)
 #define IEEE80211_ASSOC_TIMEOUT_SHORT	(HZ / 10)
 #define IEEE80211_ASSOC_MAX_TRIES	3
+
+#define IEEE80211_ADV_TTLM_SAFETY_BUFFER_MS msecs_to_jiffies(100)
+#define IEEE80211_ADV_TTLM_ST_UNDERFLOW 0xff00
 
 static int max_nullfunc_tries = 2;
 module_param(max_nullfunc_tries, int, 0644);
@@ -2900,6 +2903,7 @@ static void ieee80211_set_disassoc(struct ieee80211_sub_if_data *sdata,
 
 	/* other links will be destroyed */
 	sdata->deflink.u.mgd.bss = NULL;
+	sdata->deflink.smps_mode = IEEE80211_SMPS_OFF;
 
 	netif_carrier_off(sdata->dev);
 
@@ -5027,9 +5031,6 @@ static int ieee80211_prep_channel(struct ieee80211_sub_if_data *sdata,
 	if (!link)
 		return 0;
 
-	/* will change later if needed */
-	link->smps_mode = IEEE80211_SMPS_OFF;
-
 	/*
 	 * If this fails (possibly due to channel context sharing
 	 * on incompatible channels, e.g. 80+80 and 160 sharing the
@@ -5946,6 +5947,13 @@ ieee80211_parse_adv_t2l(struct ieee80211_sub_if_data *sdata,
 	pos++;
 
 	ttlm_info->switch_time = get_unaligned_le16(pos);
+
+	/* Since ttlm_info->switch_time == 0 means no switch time, bump it
+	 * by 1.
+	 */
+	if (!ttlm_info->switch_time)
+		ttlm_info->switch_time = 1;
+
 	pos += 2;
 
 	if (control & IEEE80211_TTLM_CONTROL_EXPECTED_DUR_PRESENT) {
@@ -6040,25 +6048,46 @@ static void ieee80211_process_adv_ttlm(struct ieee80211_sub_if_data *sdata,
 		}
 
 		if (ttlm_info.switch_time) {
-			u32 st_us, delay = 0;
-			u32 ts_l26 = beacon_ts & GENMASK(25, 0);
+			u16 beacon_ts_tu, st_tu, delay;
+			u32 delay_jiffies;
+			u64 mask;
 
 			/* The t2l map switch time is indicated with a partial
-			 * TSF value, convert it to TSF and calc the delay
-			 * to the start time.
+			 * TSF value (bits 10 to 25), get the partial beacon TS
+			 * as well, and calc the delay to the start time.
 			 */
-			st_us = ieee80211_tu_to_usec(ttlm_info.switch_time);
-			if (st_us > ts_l26)
-				delay = st_us - ts_l26;
+			mask = GENMASK_ULL(25, 10);
+			beacon_ts_tu = (beacon_ts & mask) >> 10;
+			st_tu = ttlm_info.switch_time;
+			delay = st_tu - beacon_ts_tu;
+
+			/*
+			 * If the switch time is far in the future, then it
+			 * could also be the previous switch still being
+			 * announced.
+			 * We can simply ignore it for now, if it is a future
+			 * switch the AP will continue to announce it anyway.
+			 */
+			if (delay > IEEE80211_ADV_TTLM_ST_UNDERFLOW)
+				return;
+
+			delay_jiffies = TU_TO_JIFFIES(delay);
+
+			/* Link switching can take time, so schedule it
+			 * 100ms before to be ready on time
+			 */
+			if (delay_jiffies > IEEE80211_ADV_TTLM_SAFETY_BUFFER_MS)
+				delay_jiffies -=
+					IEEE80211_ADV_TTLM_SAFETY_BUFFER_MS;
 			else
-				continue;
+				delay_jiffies = 0;
 
 			sdata->u.mgd.ttlm_info = ttlm_info;
 			wiphy_delayed_work_cancel(sdata->local->hw.wiphy,
 						  &sdata->u.mgd.ttlm_work);
 			wiphy_delayed_work_queue(sdata->local->hw.wiphy,
 						 &sdata->u.mgd.ttlm_work,
-						 usecs_to_jiffies(delay));
+						 delay_jiffies);
 			return;
 		}
 	}
@@ -7044,6 +7073,7 @@ void ieee80211_mgd_setup_link(struct ieee80211_link_data *link)
 	link->u.mgd.p2p_noa_index = -1;
 	link->u.mgd.conn_flags = 0;
 	link->conf->bssid = link->u.mgd.bssid;
+	link->smps_mode = IEEE80211_SMPS_OFF;
 
 	wiphy_work_init(&link->u.mgd.request_smps_work,
 			ieee80211_request_smps_mgd_work);
@@ -7257,6 +7287,75 @@ out_err:
 	return err;
 }
 
+static bool ieee80211_mgd_csa_present(struct ieee80211_sub_if_data *sdata,
+				      const struct cfg80211_bss_ies *ies,
+				      u8 cur_channel, bool ignore_ecsa)
+{
+	const struct element *csa_elem, *ecsa_elem;
+	struct ieee80211_channel_sw_ie *csa = NULL;
+	struct ieee80211_ext_chansw_ie *ecsa = NULL;
+
+	if (!ies)
+		return false;
+
+	csa_elem = cfg80211_find_elem(WLAN_EID_CHANNEL_SWITCH,
+				      ies->data, ies->len);
+	if (csa_elem && csa_elem->datalen == sizeof(*csa))
+		csa = (void *)csa_elem->data;
+
+	ecsa_elem = cfg80211_find_elem(WLAN_EID_EXT_CHANSWITCH_ANN,
+				       ies->data, ies->len);
+	if (ecsa_elem && ecsa_elem->datalen == sizeof(*ecsa))
+		ecsa = (void *)ecsa_elem->data;
+
+	if (csa && csa->count == 0)
+		csa = NULL;
+	if (csa && !csa->mode && csa->new_ch_num == cur_channel)
+		csa = NULL;
+
+	if (ecsa && ecsa->count == 0)
+		ecsa = NULL;
+	if (ecsa && !ecsa->mode && ecsa->new_ch_num == cur_channel)
+		ecsa = NULL;
+
+	if (ignore_ecsa && ecsa) {
+		sdata_info(sdata,
+			   "Ignoring ECSA in probe response - was considered stuck!\n");
+		return csa;
+	}
+
+	return csa || ecsa;
+}
+
+static bool ieee80211_mgd_csa_in_process(struct ieee80211_sub_if_data *sdata,
+					 struct cfg80211_bss *bss)
+{
+	u8 cur_channel;
+	bool ret;
+
+	cur_channel = ieee80211_frequency_to_channel(bss->channel->center_freq);
+
+	rcu_read_lock();
+	if (ieee80211_mgd_csa_present(sdata,
+				      rcu_dereference(bss->beacon_ies),
+				      cur_channel, false)) {
+		ret = true;
+		goto out;
+	}
+
+	if (ieee80211_mgd_csa_present(sdata,
+				      rcu_dereference(bss->proberesp_ies),
+				      cur_channel, bss->proberesp_ecsa_stuck)) {
+		ret = true;
+		goto out;
+	}
+
+	ret = false;
+out:
+	rcu_read_unlock();
+	return ret;
+}
+
 /* config hooks */
 int ieee80211_mgd_auth(struct ieee80211_sub_if_data *sdata,
 		       struct cfg80211_auth_request *req)
@@ -7265,7 +7364,6 @@ int ieee80211_mgd_auth(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
 	struct ieee80211_mgd_auth_data *auth_data;
 	struct ieee80211_link_data *link;
-	const struct element *csa_elem, *ecsa_elem;
 	u16 auth_alg;
 	int err;
 	bool cont_auth;
@@ -7308,21 +7406,10 @@ int ieee80211_mgd_auth(struct ieee80211_sub_if_data *sdata,
 	if (ifmgd->assoc_data)
 		return -EBUSY;
 
-	rcu_read_lock();
-	csa_elem = ieee80211_bss_get_elem(req->bss, WLAN_EID_CHANNEL_SWITCH);
-	ecsa_elem = ieee80211_bss_get_elem(req->bss,
-					   WLAN_EID_EXT_CHANSWITCH_ANN);
-	if ((csa_elem &&
-	     csa_elem->datalen == sizeof(struct ieee80211_channel_sw_ie) &&
-	     ((struct ieee80211_channel_sw_ie *)csa_elem->data)->count != 0) ||
-	    (ecsa_elem &&
-	     ecsa_elem->datalen == sizeof(struct ieee80211_ext_chansw_ie) &&
-	     ((struct ieee80211_ext_chansw_ie *)ecsa_elem->data)->count != 0)) {
-		rcu_read_unlock();
+	if (ieee80211_mgd_csa_in_process(sdata, req->bss)) {
 		sdata_info(sdata, "AP is in CSA process, reject auth\n");
 		return -EINVAL;
 	}
-	rcu_read_unlock();
 
 	auth_data = kzalloc(sizeof(*auth_data) + req->auth_data_len +
 			    req->ie_len, GFP_KERNEL);
@@ -7631,7 +7718,7 @@ int ieee80211_mgd_assoc(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
 	struct ieee80211_mgd_assoc_data *assoc_data;
-	const struct element *ssid_elem, *csa_elem, *ecsa_elem;
+	const struct element *ssid_elem;
 	struct ieee80211_vif_cfg *vif_cfg = &sdata->vif.cfg;
 	ieee80211_conn_flags_t conn_flags = 0;
 	struct ieee80211_link_data *link;
@@ -7654,23 +7741,15 @@ int ieee80211_mgd_assoc(struct ieee80211_sub_if_data *sdata,
 
 	cbss = req->link_id < 0 ? req->bss : req->links[req->link_id].bss;
 
-	rcu_read_lock();
-	ssid_elem = ieee80211_bss_get_elem(cbss, WLAN_EID_SSID);
-	if (!ssid_elem || ssid_elem->datalen > sizeof(assoc_data->ssid)) {
-		rcu_read_unlock();
+	if (ieee80211_mgd_csa_in_process(sdata, cbss)) {
+		sdata_info(sdata, "AP is in CSA process, reject assoc\n");
 		kfree(assoc_data);
 		return -EINVAL;
 	}
 
-	csa_elem = ieee80211_bss_get_elem(cbss, WLAN_EID_CHANNEL_SWITCH);
-	ecsa_elem = ieee80211_bss_get_elem(cbss, WLAN_EID_EXT_CHANSWITCH_ANN);
-	if ((csa_elem &&
-	     csa_elem->datalen == sizeof(struct ieee80211_channel_sw_ie) &&
-	     ((struct ieee80211_channel_sw_ie *)csa_elem->data)->count != 0) ||
-	    (ecsa_elem &&
-	     ecsa_elem->datalen == sizeof(struct ieee80211_ext_chansw_ie) &&
-	     ((struct ieee80211_ext_chansw_ie *)ecsa_elem->data)->count != 0)) {
-		sdata_info(sdata, "AP is in CSA process, reject assoc\n");
+	rcu_read_lock();
+	ssid_elem = ieee80211_bss_get_elem(cbss, WLAN_EID_SSID);
+	if (!ssid_elem || ssid_elem->datalen > sizeof(assoc_data->ssid)) {
 		rcu_read_unlock();
 		kfree(assoc_data);
 		return -EINVAL;
@@ -7945,8 +8024,7 @@ int ieee80211_mgd_assoc(struct ieee80211_sub_if_data *sdata,
 
 		rcu_read_lock();
 		beacon_ies = rcu_dereference(req->bss->beacon_ies);
-
-		if (beacon_ies) {
+		if (!beacon_ies) {
 			/*
 			 * Wait up to one beacon interval ...
 			 * should this be more if we miss one?
@@ -8027,6 +8105,7 @@ int ieee80211_mgd_deauth(struct ieee80211_sub_if_data *sdata,
 		ieee80211_report_disconnect(sdata, frame_buf,
 					    sizeof(frame_buf), true,
 					    req->reason_code, false);
+		drv_mgd_complete_tx(sdata->local, sdata, &info);
 		return 0;
 	}
 

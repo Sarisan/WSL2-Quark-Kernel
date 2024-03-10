@@ -1596,6 +1596,7 @@ static void __init early_identify_cpu(struct cpuinfo_x86 *c)
 		get_cpu_vendor(c);
 		get_cpu_cap(c);
 		setup_force_cpu_cap(X86_FEATURE_CPUID);
+		get_cpu_address_sizes(c);
 		cpu_parse_early_param();
 
 		if (this_cpu->c_early_init)
@@ -1608,9 +1609,8 @@ static void __init early_identify_cpu(struct cpuinfo_x86 *c)
 			this_cpu->c_bsp_init(c);
 	} else {
 		setup_clear_cpu_cap(X86_FEATURE_CPUID);
+		get_cpu_address_sizes(c);
 	}
-
-	get_cpu_address_sizes(c);
 
 	setup_force_cpu_cap(X86_FEATURE_ALWAYS);
 
@@ -1855,6 +1855,13 @@ static void identify_cpu(struct cpuinfo_x86 *c)
 #ifdef CONFIG_X86_64
 	c->topo.apicid = apic->phys_pkg_id(c->topo.initial_apicid, 0);
 #endif
+
+
+	/*
+	 * Set default APIC and TSC_DEADLINE MSR fencing flag. AMD and
+	 * Hygon will clear it in ->c_init() below.
+	 */
+	set_cpu_cap(c, X86_FEATURE_APIC_MSRS_FENCE);
 
 	/*
 	 * Vendor-specific initialization.  In this section we

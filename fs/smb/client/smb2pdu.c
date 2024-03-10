@@ -156,6 +156,56 @@ out:
 	return;
 }
 
+/* helper function for code reuse */
+static int
+cifs_chan_skip_or_disable(struct cifs_ses *ses,
+			  struct TCP_Server_Info *server,
+			  bool from_reconnect)
+{
+	struct TCP_Server_Info *pserver;
+	unsigned int chan_index;
+
+	if (SERVER_IS_CHAN(server)) {
+		cifs_dbg(VFS,
+			"server %s does not support multichannel anymore. Skip secondary channel\n",
+			 ses->server->hostname);
+
+		spin_lock(&ses->chan_lock);
+		chan_index = cifs_ses_get_chan_index(ses, server);
+		if (chan_index == CIFS_INVAL_CHAN_INDEX) {
+			spin_unlock(&ses->chan_lock);
+			goto skip_terminate;
+		}
+
+		ses->chans[chan_index].server = NULL;
+		server->terminate = true;
+		spin_unlock(&ses->chan_lock);
+
+		/*
+		 * the above reference of server by channel
+		 * needs to be dropped without holding chan_lock
+		 * as cifs_put_tcp_session takes a higher lock
+		 * i.e. cifs_tcp_ses_lock
+		 */
+		cifs_put_tcp_session(server, from_reconnect);
+
+		cifs_signal_cifsd_for_reconnect(server, false);
+
+		/* mark primary server as needing reconnect */
+		pserver = server->primary_server;
+		cifs_signal_cifsd_for_reconnect(pserver, false);
+skip_terminate:
+		return -EHOSTDOWN;
+	}
+
+	cifs_server_dbg(VFS,
+		"server does not support multichannel anymore. Disable all other channels\n");
+	cifs_disable_secondary_channels(ses);
+
+
+	return 0;
+}
+
 static int
 smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 	       struct TCP_Server_Info *server, bool from_reconnect)
@@ -164,8 +214,6 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon,
 	struct nls_table *nls_codepage = NULL;
 	struct cifs_ses *ses;
 	int xid;
-	struct TCP_Server_Info *pserver;
-	unsigned int chan_index;
 
 	/*
 	 * SMB2s NegProt, SessSetup, Logoff do not have tcon yet so
@@ -310,44 +358,11 @@ again:
 		 */
 		if (ses->chan_count > 1 &&
 		    !(server->capabilities & SMB2_GLOBAL_CAP_MULTI_CHANNEL)) {
-			if (SERVER_IS_CHAN(server)) {
-				cifs_dbg(VFS, "server %s does not support " \
-					 "multichannel anymore. skipping secondary channel\n",
-					 ses->server->hostname);
-
-				spin_lock(&ses->chan_lock);
-				chan_index = cifs_ses_get_chan_index(ses, server);
-				if (chan_index == CIFS_INVAL_CHAN_INDEX) {
-					spin_unlock(&ses->chan_lock);
-					goto skip_terminate;
-				}
-
-				ses->chans[chan_index].server = NULL;
-				spin_unlock(&ses->chan_lock);
-
-				/*
-				 * the above reference of server by channel
-				 * needs to be dropped without holding chan_lock
-				 * as cifs_put_tcp_session takes a higher lock
-				 * i.e. cifs_tcp_ses_lock
-				 */
-				cifs_put_tcp_session(server, from_reconnect);
-
-				server->terminate = true;
-				cifs_signal_cifsd_for_reconnect(server, false);
-
-				/* mark primary server as needing reconnect */
-				pserver = server->primary_server;
-				cifs_signal_cifsd_for_reconnect(pserver, false);
-
-skip_terminate:
+			rc = cifs_chan_skip_or_disable(ses, server,
+						       from_reconnect);
+			if (rc) {
 				mutex_unlock(&ses->session_mutex);
-				rc = -EHOSTDOWN;
 				goto out;
-			} else {
-				cifs_server_dbg(VFS, "does not support " \
-					 "multichannel anymore. disabling all other channels\n");
-				cifs_disable_secondary_channels(ses);
 			}
 		}
 
@@ -384,6 +399,15 @@ skip_sess_setup:
 		goto out;
 	}
 
+	spin_lock(&ses->ses_lock);
+	if (ses->flags & CIFS_SES_FLAG_SCALE_CHANNELS) {
+		spin_unlock(&ses->ses_lock);
+		mutex_unlock(&ses->session_mutex);
+		goto skip_add_channels;
+	}
+	ses->flags |= CIFS_SES_FLAG_SCALE_CHANNELS;
+	spin_unlock(&ses->ses_lock);
+
 	if (!rc &&
 	    (server->capabilities & SMB2_GLOBAL_CAP_MULTI_CHANNEL)) {
 		mutex_unlock(&ses->session_mutex);
@@ -395,20 +419,40 @@ skip_sess_setup:
 		rc = SMB3_request_interfaces(xid, tcon, false);
 		free_xid(xid);
 
-		if (rc)
+		if (rc == -EOPNOTSUPP && ses->chan_count > 1) {
+			/*
+			 * some servers like Azure SMB server do not advertise
+			 * that multichannel has been disabled with server
+			 * capabilities, rather return STATUS_NOT_IMPLEMENTED.
+			 * treat this as server not supporting multichannel
+			 */
+
+			rc = cifs_chan_skip_or_disable(ses, server,
+						       from_reconnect);
+			goto skip_add_channels;
+		} else if (rc)
 			cifs_dbg(FYI, "%s: failed to query server interfaces: %d\n",
 				 __func__, rc);
 
 		if (ses->chan_max > ses->chan_count &&
+		    ses->iface_count &&
 		    !SERVER_IS_CHAN(server)) {
-			if (ses->chan_count == 1)
+			if (ses->chan_count == 1) {
 				cifs_server_dbg(VFS, "supports multichannel now\n");
+				queue_delayed_work(cifsiod_wq, &tcon->query_interfaces,
+						 (SMB_INTERFACE_POLL_INTERVAL * HZ));
+			}
 
 			cifs_try_adding_channels(ses);
 		}
 	} else {
 		mutex_unlock(&ses->session_mutex);
 	}
+
+skip_add_channels:
+	spin_lock(&ses->ses_lock);
+	ses->flags &= ~CIFS_SES_FLAG_SCALE_CHANNELS;
+	spin_unlock(&ses->ses_lock);
 
 	if (smb2_command != SMB2_INTERNAL_CMD)
 		mod_delayed_work(cifsiod_wq, &server->reconnect, 0);
@@ -2279,7 +2323,7 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 
 		noff = le16_to_cpu(cc->NameOffset);
 		nlen = le16_to_cpu(cc->NameLength);
-		if (noff + nlen >= doff)
+		if (noff + nlen > doff)
 			return -EINVAL;
 
 		name = (char *)cc + noff;
@@ -5048,6 +5092,9 @@ int SMB2_query_directory_init(const unsigned int xid,
 	case SMB_FIND_FILE_POSIX_INFO:
 		req->FileInformationClass = SMB_FIND_FILE_POSIX_INFO;
 		break;
+	case SMB_FIND_FILE_FULL_DIRECTORY_INFO:
+		req->FileInformationClass = FILE_FULL_DIRECTORY_INFORMATION;
+		break;
 	default:
 		cifs_tcon_dbg(VFS, "info level %u isn't supported\n",
 			info_level);
@@ -5116,6 +5163,9 @@ smb2_parse_query_directory(struct cifs_tcon *tcon,
 	case SMB_FIND_FILE_POSIX_INFO:
 		/* note that posix payload are variable size */
 		info_buf_size = sizeof(struct smb2_posix_info);
+		break;
+	case SMB_FIND_FILE_FULL_DIRECTORY_INFO:
+		info_buf_size = sizeof(FILE_FULL_DIRECTORY_INFO);
 		break;
 	default:
 		cifs_tcon_dbg(VFS, "info level %u isn't supported\n",
