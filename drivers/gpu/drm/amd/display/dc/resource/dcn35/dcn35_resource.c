@@ -701,7 +701,7 @@ static const struct dc_plane_cap plane_cap = {
 
 	// 6:1 downscaling ratio: 1000/6 = 166.666
 	.max_downscale_factor = {
-			.argb8888 = 167,
+			.argb8888 = 250,
 			.nv12 = 167,
 			.fp16 = 167
 	},
@@ -782,6 +782,7 @@ static const struct dc_debug_options debug_defaults_drv = {
 	.psp_disabled_wa = true,
 	.ips2_eval_delay_us = 2000,
 	.ips2_entry_delay_us = 800,
+	.disable_dmub_reallow_idle = true,
 	.static_screen_wait_frames = 2,
 };
 
