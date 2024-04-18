@@ -1792,7 +1792,7 @@ static int hisi_sas_debug_I_T_nexus_reset(struct domain_device *device)
 	if (dev_is_sata(device)) {
 		struct ata_link *link = &device->sata_dev.ap->link;
 
-		rc = ata_wait_after_reset(link, HISI_SAS_WAIT_PHYUP_TIMEOUT,
+		rc = ata_wait_after_reset(link, jiffies + HISI_SAS_WAIT_PHYUP_TIMEOUT,
 					  smp_ata_check_ready_type);
 	} else {
 		msleep(2000);
@@ -1962,9 +1962,17 @@ static bool hisi_sas_internal_abort_timeout(struct sas_task *task,
 	struct hisi_sas_internal_abort_data *timeout = data;
 
 	if (hisi_sas_debugfs_enable && hisi_hba->debugfs_itct[0].itct) {
-		down(&hisi_hba->sem);
+		/*
+		 * If timeout occurs in device gone scenario, to avoid
+		 * circular dependency like:
+		 * hisi_sas_dev_gone() -> down() -> ... ->
+		 * hisi_sas_internal_abort_timeout() -> down().
+		 */
+		if (!timeout->rst_ha_timeout)
+			down(&hisi_hba->sem);
 		hisi_hba->hw->debugfs_snapshot_regs(hisi_hba);
-		up(&hisi_hba->sem);
+		if (!timeout->rst_ha_timeout)
+			up(&hisi_hba->sem);
 	}
 
 	if (task->task_state_flags & SAS_TASK_STATE_DONE) {
