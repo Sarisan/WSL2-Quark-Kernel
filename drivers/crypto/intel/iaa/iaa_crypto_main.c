@@ -908,6 +908,8 @@ static int save_iaa_wq(struct idxd_wq *wq)
 		return -EINVAL;
 
 	cpus_per_iaa = (nr_nodes * nr_cpus_per_node) / nr_iaa;
+	if (!cpus_per_iaa)
+		cpus_per_iaa = 1;
 out:
 	return 0;
 }
@@ -923,10 +925,12 @@ static void remove_iaa_wq(struct idxd_wq *wq)
 		}
 	}
 
-	if (nr_iaa)
+	if (nr_iaa) {
 		cpus_per_iaa = (nr_nodes * nr_cpus_per_node) / nr_iaa;
-	else
-		cpus_per_iaa = 0;
+		if (!cpus_per_iaa)
+			cpus_per_iaa = 1;
+	} else
+		cpus_per_iaa = 1;
 }
 
 static int wq_table_add_wqs(int iaa, int cpu)
@@ -1324,7 +1328,7 @@ static int iaa_compress(struct crypto_tfm *tfm,	struct acomp_req *req,
 
 	*compression_crc = idxd_desc->iax_completion->crc;
 
-	if (!ctx->async_mode)
+	if (!ctx->async_mode || disable_async)
 		idxd_free_desc(wq, idxd_desc);
 out:
 	return ret;
@@ -1570,7 +1574,7 @@ static int iaa_decompress(struct crypto_tfm *tfm, struct acomp_req *req,
 
 	*dlen = req->dlen;
 
-	if (!ctx->async_mode)
+	if (!ctx->async_mode || disable_async)
 		idxd_free_desc(wq, idxd_desc);
 
 	/* Update stats */
