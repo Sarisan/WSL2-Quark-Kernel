@@ -3118,6 +3118,7 @@ static int btusb_mtk_setup(struct hci_dev *hdev)
 			bt_dev_err(hdev, "Failed to get fw flavor (%d)", err);
 			return err;
 		}
+		fw_flavor = (fw_flavor & 0x00000080) >> 7;
 	}
 
 	mediatek = hci_get_priv(hdev);
@@ -4330,11 +4331,6 @@ static int btusb_probe(struct usb_interface *intf,
 
 	hdev->bus = HCI_USB;
 	hci_set_drvdata(hdev, data);
-
-	if (id->driver_info & BTUSB_AMP)
-		hdev->dev_type = HCI_AMP;
-	else
-		hdev->dev_type = HCI_PRIMARY;
 
 	data->hdev = hdev;
 

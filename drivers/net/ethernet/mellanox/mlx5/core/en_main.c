@@ -3790,7 +3790,7 @@ mlx5e_get_stats(struct net_device *dev, struct rtnl_link_stats64 *stats)
 		mlx5e_fold_sw_stats64(priv, stats);
 	}
 
-	stats->rx_dropped = priv->stats.qcnt.rx_out_of_buffer;
+	stats->rx_missed_errors = priv->stats.qcnt.rx_out_of_buffer;
 
 	stats->rx_length_errors =
 		PPORT_802_3_GET(pstats, a_in_range_length_errors) +
@@ -4738,7 +4738,7 @@ static netdev_features_t mlx5e_tunnel_features_check(struct mlx5e_priv *priv,
 
 		/* Verify if UDP port is being offloaded by HW */
 		if (mlx5_vxlan_lookup_port(priv->mdev->vxlan, port))
-			return features;
+			return vxlan_features_check(skb, features);
 
 #if IS_ENABLED(CONFIG_GENEVE)
 		/* Support Geneve offload for default UDP port */
@@ -4764,7 +4764,6 @@ netdev_features_t mlx5e_features_check(struct sk_buff *skb,
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
 	features = vlan_features_check(skb, features);
-	features = vxlan_features_check(skb, features);
 
 	/* Validate if the tunneled packet is being offloaded by HW */
 	if (skb->encapsulation &&
@@ -6058,7 +6057,7 @@ static int mlx5e_resume(struct auxiliary_device *adev)
 	return 0;
 }
 
-static int _mlx5e_suspend(struct auxiliary_device *adev)
+static int _mlx5e_suspend(struct auxiliary_device *adev, bool pre_netdev_reg)
 {
 	struct mlx5e_dev *mlx5e_dev = auxiliary_get_drvdata(adev);
 	struct mlx5e_priv *priv = mlx5e_dev->priv;
@@ -6067,7 +6066,7 @@ static int _mlx5e_suspend(struct auxiliary_device *adev)
 	struct mlx5_core_dev *pos;
 	int i;
 
-	if (!netif_device_present(netdev)) {
+	if (!pre_netdev_reg && !netif_device_present(netdev)) {
 		if (test_bit(MLX5E_STATE_DESTROYING, &priv->state))
 			mlx5_sd_for_each_dev(i, mdev, pos)
 				mlx5e_destroy_mdev_resources(pos);
@@ -6090,7 +6089,7 @@ static int mlx5e_suspend(struct auxiliary_device *adev, pm_message_t state)
 
 	actual_adev = mlx5_sd_get_adev(mdev, adev, edev->idx);
 	if (actual_adev)
-		err = _mlx5e_suspend(actual_adev);
+		err = _mlx5e_suspend(actual_adev, false);
 
 	mlx5_sd_cleanup(mdev);
 	return err;
@@ -6157,7 +6156,7 @@ static int _mlx5e_probe(struct auxiliary_device *adev)
 	return 0;
 
 err_resume:
-	_mlx5e_suspend(adev);
+	_mlx5e_suspend(adev, true);
 err_profile_cleanup:
 	profile->cleanup(priv);
 err_destroy_netdev:
@@ -6197,7 +6196,7 @@ static void _mlx5e_remove(struct auxiliary_device *adev)
 	mlx5_core_uplink_netdev_set(mdev, NULL);
 	mlx5e_dcbnl_delete_app(priv);
 	unregister_netdev(priv->netdev);
-	_mlx5e_suspend(adev);
+	_mlx5e_suspend(adev, false);
 	priv->profile->cleanup(priv);
 	mlx5e_destroy_netdev(priv);
 	mlx5e_devlink_port_unregister(mlx5e_dev);

@@ -2028,6 +2028,7 @@ smb2_duplicate_extents(const unsigned int xid,
 		 * size will be queried on next revalidate, but it is important
 		 * to make sure that file's cached size is updated immediately
 		 */
+		netfs_resize_file(netfs_inode(inode), dest_off + len, true);
 		cifs_setsize(inode, dest_off + len);
 	}
 	rc = SMB2_ioctl(xid, tcon, trgtfile->fid.persistent_fid,
@@ -4994,6 +4995,9 @@ static int __cifs_sfu_make_node(unsigned int xid, struct inode *inode,
 		strscpy(pdev.type, "IntxBLK");
 		pdev.major = cpu_to_le64(MAJOR(dev));
 		pdev.minor = cpu_to_le64(MINOR(dev));
+		break;
+	case S_IFSOCK:
+		strscpy(pdev.type, "LnxSOCK");
 		break;
 	case S_IFIFO:
 		strscpy(pdev.type, "LnxFIFO");
