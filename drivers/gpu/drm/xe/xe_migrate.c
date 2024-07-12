@@ -33,7 +33,6 @@
 #include "xe_sync.h"
 #include "xe_trace.h"
 #include "xe_vm.h"
-#include "xe_wa.h"
 
 /**
  * struct xe_migrate - migrate context.
@@ -299,10 +298,6 @@ static int xe_migrate_prepare_vm(struct xe_tile *tile, struct xe_migrate *m,
 }
 
 /*
- * Due to workaround 16017236439, odd instance hardware copy engines are
- * faster than even instance ones.
- * This function returns the mask involving all fast copy engines and the
- * reserved copy engine to be used as logical mask for migrate engine.
  * Including the reserved copy engine is required to avoid deadlocks due to
  * migrate jobs servicing the faults gets stuck behind the job that faulted.
  */
@@ -316,8 +311,7 @@ static u32 xe_migrate_usm_logical_mask(struct xe_gt *gt)
 		if (hwe->class != XE_ENGINE_CLASS_COPY)
 			continue;
 
-		if (!XE_WA(gt, 16017236439) ||
-		    xe_gt_is_usm_hwe(gt, hwe) || hwe->instance & 1)
+		if (xe_gt_is_usm_hwe(gt, hwe))
 			logical_mask |= BIT(hwe->logical_instance);
 	}
 
@@ -368,6 +362,10 @@ struct xe_migrate *xe_migrate_init(struct xe_tile *tile)
 		if (!hwe || !logical_mask)
 			return ERR_PTR(-EINVAL);
 
+		/*
+		 * XXX: Currently only reserving 1 (likely slow) BCS instance on
+		 * PVC, may want to revisit if performance is needed.
+		 */
 		m->q = xe_exec_queue_create(xe, vm, logical_mask, 1, hwe,
 					    EXEC_QUEUE_FLAG_KERNEL |
 					    EXEC_QUEUE_FLAG_PERMANENT |
@@ -1338,7 +1336,7 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 						 GFP_KERNEL, true, 0);
 			if (IS_ERR(sa_bo)) {
 				err = PTR_ERR(sa_bo);
-				goto err;
+				goto err_bb;
 			}
 
 			ppgtt_ofs = NUM_KERNEL_PDE +
@@ -1389,7 +1387,7 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 					 update_idx);
 	if (IS_ERR(job)) {
 		err = PTR_ERR(job);
-		goto err_bb;
+		goto err_sa;
 	}
 
 	/* Wait on BO move */
@@ -1438,12 +1436,12 @@ xe_migrate_update_pgtables(struct xe_migrate *m,
 
 err_job:
 	xe_sched_job_put(job);
+err_sa:
+	drm_suballoc_free(sa_bo, NULL);
 err_bb:
 	if (!q)
 		mutex_unlock(&m->job_mutex);
 	xe_bb_free(bb, NULL);
-err:
-	drm_suballoc_free(sa_bo, NULL);
 	return ERR_PTR(err);
 }
 

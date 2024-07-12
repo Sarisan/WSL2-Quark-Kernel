@@ -1958,6 +1958,9 @@ int wx_sw_init(struct wx *wx)
 		return -ENOMEM;
 	}
 
+	bitmap_zero(wx->state, WX_STATE_NBITS);
+	wx->misc_irq_domain = false;
+
 	return 0;
 }
 EXPORT_SYMBOL(wx_sw_init);

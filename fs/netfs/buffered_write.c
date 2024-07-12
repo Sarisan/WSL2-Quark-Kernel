@@ -163,7 +163,7 @@ ssize_t netfs_perform_write(struct kiocb *iocb, struct iov_iter *iter,
 	struct folio *folio;
 	enum netfs_how_to_modify howto;
 	enum netfs_folio_trace trace;
-	unsigned int bdp_flags = (iocb->ki_flags & IOCB_SYNC) ? 0: BDP_ASYNC;
+	unsigned int bdp_flags = (iocb->ki_flags & IOCB_NOWAIT) ? BDP_ASYNC : 0;
 	ssize_t written = 0, ret, ret2;
 	loff_t i_size, pos = iocb->ki_pos, from, to;
 	size_t max_chunk = PAGE_SIZE << MAX_PAGECACHE_ORDER;
@@ -507,6 +507,7 @@ vm_fault_t netfs_page_mkwrite(struct vm_fault *vmf, struct netfs_group *netfs_gr
 {
 	struct folio *folio = page_folio(vmf->page);
 	struct file *file = vmf->vma->vm_file;
+	struct address_space *mapping = file->f_mapping;
 	struct inode *inode = file_inode(file);
 	vm_fault_t ret = VM_FAULT_RETRY;
 	int err;
@@ -520,6 +521,11 @@ vm_fault_t netfs_page_mkwrite(struct vm_fault *vmf, struct netfs_group *netfs_gr
 
 	if (folio_lock_killable(folio) < 0)
 		goto out;
+	if (folio->mapping != mapping) {
+		folio_unlock(folio);
+		ret = VM_FAULT_NOPAGE;
+		goto out;
+	}
 
 	/* Can we see a streaming write here? */
 	if (WARN_ON(!folio_test_uptodate(folio))) {
@@ -529,9 +535,9 @@ vm_fault_t netfs_page_mkwrite(struct vm_fault *vmf, struct netfs_group *netfs_gr
 
 	if (netfs_folio_group(folio) != netfs_group) {
 		folio_unlock(folio);
-		err = filemap_fdatawait_range(inode->i_mapping,
-					      folio_pos(folio),
-					      folio_pos(folio) + folio_size(folio));
+		err = filemap_fdatawrite_range(mapping,
+					       folio_pos(folio),
+					       folio_pos(folio) + folio_size(folio));
 		switch (err) {
 		case 0:
 			ret = VM_FAULT_RETRY;
