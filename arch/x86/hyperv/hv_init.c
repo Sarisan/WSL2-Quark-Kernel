@@ -287,7 +287,11 @@ static int hv_cpu_die(unsigned int cpu)
 
 static int __init hv_pci_init(void)
 {
-	bool gen2vm = efi_enabled(EFI_BOOT);
+	bool gen2vm = true;
+
+#ifndef CONFIG_DXGKRNL
+	gen2vm = efi_enabled(EFI_BOOT);
+#endif
 
 	/*
 	 * A Generation-2 VM doesn't support legacy PCI/PCIe, so both
