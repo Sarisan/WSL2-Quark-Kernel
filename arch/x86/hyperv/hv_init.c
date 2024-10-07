@@ -288,6 +288,9 @@ static int __init hv_pci_init(void)
 {
 	bool gen2vm = efi_enabled(EFI_BOOT);
 
+	if (strstr(boot_command_line, "WSL"))
+		gen2vm = true;
+
 	/*
 	 * A Generation-2 VM doesn't support legacy PCI/PCIe, so both
 	 * raw_pci_ops and raw_pci_ext_ops are NULL, and pci_subsys_init() ->
